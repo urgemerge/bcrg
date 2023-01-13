@@ -1,0 +1,176 @@
+#vim: set ft=bash
+if [ -d "$BRCGDIR" ]; then
+	
+	# i live here
+	SELF=$BRCGDIR/bashrc-global
+	
+	BRCGSERVER=true
+else	
+	# i live here
+	BRCGDIR=$HOME
+	SELF=$BRCGDIR/.bashrc-global
+	
+	BRCGSERVER=false
+fi
+
+if [ $BRCGSERVER == "true" ]; then
+
+	
+	# serve myself
+	if [ -e "$(which ncat)" ]; then
+		if ! ncat -z localhost 10000; then
+			# serve
+			while true; do cat $BRCGDIR/bashrc-global | ncat -l 127.0.0.1 10000; done &> /dev/null &
+		else
+			# reload
+			pkill -f "ncat -l 127.0.0.1 10000" &> /dev/null
+		fi
+	fi
+
+	# pull / push functions
+	if [ -e "$(which git)" ]; then
+		function brcg-pull {
+			cd $BRCGDIR/
+			git pull
+			cd - &> /dev/null
+			echo
+			echo "executing brcg-load"
+			brcg-load
+		}
+		
+		function brcg-push {
+			cd $BRCGDIR/
+			git diff
+		
+			echo "Enter commit message"
+			read COMMITMSG
+		
+			git add .
+			git commit -m "$COMMITMSG"
+			git push
+			cd - &> /dev/null
+		}
+	fi
+
+	# start tmux
+	if [ -z ${TMUX} ] && [ -e "$(which tmux)" ]; then
+		if tmux ls &> /dev/null; then
+			if [ -f /.dockerenv ] || [ ! -z "$SSH_CLIENT" ]; then
+		        	tmux at
+			else
+				tmux
+			fi
+		else
+		        tmux
+		fi
+	fi
+fi
+
+# ssh function that ships this file and loads it at login
+function brcg-ssh {
+       		tswitch="-t"
+        	echo $@ | grep -q '\-t' && tswitch=""
+		/usr/bin/ssh $tswitch -R 10000:localhost:10000 $@ "
+			exec 3<>/dev/tcp/localhost/10000; 
+			(echo source \$HOME/.bashrc; cat <&3) > \$HOME/.bashrc-global;
+			exec 3<&-;
+			bash --rcfile \$HOME/.bashrc-global -i
+		" 2> >(grep -v "port 10000")
+	} 
+
+# alias ssh to the function above if access to the file is given
+timeout 1 bash -c "
+	while ! cat < /dev/tcp/localhost/10000 | grep -q brcg-ssh; do 
+		echo offline
+	done &> /dev/null || exit 1
+" && alias ssh="brcg-ssh"
+
+# optional: change PS1 colors persistently
+function brcg-ps1switchcolors {
+	echo "enter salt for background"
+	read PS1BGSALTINPUT
+	
+	echo "enter salt for foreground"
+	read PS1FGSALTINPUT
+	
+	echo "PS1BGSALT=\"$PS1BGSALTINPUT\"" > ~/.bashrc-altps1colors
+	echo "PS1FGSALT=\"$PS1FGSALTINPUT\"" >> ~/.bashrc-altps1colors
+
+	echo
+	echo "Please reload bash"
+	echo
+}
+
+#alias brcg-suroot='sudo su -c "bash --rcfile ${SELF}"' # this fails at ssh servers. needs rework
+
+#
+# actual bashrc stuff
+
+HISTSIZE=999999999
+HISTFILESIZE=9999999999
+HISTTIMEFORMAT='%F %T '
+TERM=xterm-256color
+EDITOR=vim
+TAIL=$(which tail)
+
+# make this .bashrc sunos compatible
+uname -s | grep -i -q sunos && TAIL=/usr/xpg4/bin/tail
+
+if [ -f ~/.bashrc-altps1colors ]; then
+	source ~/.bashrc-altps1colors
+else
+	PS1FGSALT="lkasdasdfkjsdfjkhsdfks"
+	PS1BGSALT="klsdfkjskfhksjfkjsdfkh"
+fi
+PS1FGCOLOR="32;38;5;$((0x$( (echo "$PS1FGSALT"; hostname | cut -d . -f 1) | sha256sum | cut -f1 -d' ' | tr -d '\n' | $TAIL -c 2)))"
+PS1BGCOLOR="48;5;$((0x$( (echo "$PS1BGSALT"; hostname | cut -d . -f 1) | sha256sum | cut -f1 -d' ' | tr -d '\n' | $TAIL -c 2)))"
+PS1='${debian_chroot:+($debian_chroot)}@\[$(tput bold)\]\[\033[${PS1FGCOLOR}m\]\[\033[${PS1BGCOLOR}m\]\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ '
+
+shopt -s cmdhist
+shopt -s lithist
+
+
+cat <<EOT > ~/.tmux.conf
+# set history buffer
+set -g history-limit 99999
+set -g default-terminal "screen-256color"
+
+#enable xterm keys
+#set-option -g xterm-keys on
+
+# make putty work
+set -ag terminal-overrides ',putty*:kLFT@:kRIT@'
+
+set-window-option -g mode-keys vi
+bind-key -T copy-mode-vi 'v' send -X begin-selection
+bind-key -T copy-mode-vi 'y' send -X copy-selection-and-cancel
+
+set -g mouse on
+
+bind-key -n DoubleClick1Pane \\
+    select-pane \; \\
+    copy-mode -M \; \\
+    send-keys -X select-word \; \\
+    run-shell "sleep .5s" \; \\
+    send-keys -X copy-pipe-and-cancel "pbcopy"
+bind-key -n DoubleClick1Pane \\
+    select-pane \; \\
+    copy-mode -M \; \\
+    send-keys -X select-word \; \\
+    run-shell "sleep .5s" \;\
+    send-keys -X copy-pipe-and-cancel "pbcopy"
+#TODO; make triple click for line copy work
+EOT
+
+cat <<EOT > ~/.vimrc
+set nocompatible
+EOT
+
+set -o vi
+
+#
+# source a per-node custom bashrc file if present
+if [ -e ~/.bashrc-local ]; then
+	source ~/.bashrc-local 
+fi
+
